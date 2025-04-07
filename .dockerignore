@@ -1,0 +1,8 @@
+.github
+.git
+.husky
+.vscode
+node_modules
+cache
+*.log
+.env
