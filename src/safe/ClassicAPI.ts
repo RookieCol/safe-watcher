@@ -54,16 +54,23 @@ interface RootstockTransaction {
   id: string; // Format: multisig_ADDRESS_SAFETXHASH
   txStatus: string; // "AWAITING_CONFIRMATIONS" | "SUCCESS" | etc.
   executionInfo: {
+    type: string;
     nonce: number;
     confirmationsRequired: number;
     confirmationsSubmitted: number;
-    missingSigners: { value: Address }[] | null;
+    missingSigners:
+      | { value: Address; name: string | null; logoUri: string | null }[]
+      | null;
   };
   txInfo: {
     to: { value: Address };
     type: string;
     transferInfo?: any;
+    sender?: { value: Address; name: string | null; logoUri: string | null };
+    recipient?: { value: Address; name: string | null; logoUri: string | null };
   };
+  timestamp: number;
+  txHash: string | null;
 }
 
 interface SafeMultisigConfirmationResponse {
@@ -113,10 +120,52 @@ function getSafeTxHashFromId(id: string): Hash {
 // Convert Rootstock transaction to our common format
 function convertRootstockTransaction(tx: RootstockTransaction): ListedSafeTx {
   const safeTxHash = getSafeTxHashFromId(tx.id);
+
   return {
     safeTxHash,
     nonce: tx.executionInfo.nonce,
     confirmations: tx.executionInfo.confirmationsSubmitted,
+    confirmationsRequired: tx.executionInfo.confirmationsRequired,
+    isExecuted: tx.txStatus === "SUCCESS",
+  };
+}
+
+// Special handling for Rootstock detailed transaction
+function createRootstockDetailedTx(tx: RootstockTransaction): SafeTx<Address> {
+  const safeTxHash = getSafeTxHashFromId(tx.id);
+  const proposer =
+    tx.txInfo.sender?.value ||
+    ("0x0000000000000000000000000000000000000000" as Address);
+
+  // Determine signers - proposer is a signer, and others would be derived from missing signers
+  const allSignersRequired: Address[] = [];
+
+  // Add proposer as a signer
+  allSignersRequired.push(proposer);
+
+  // Add missing signers if available
+  if (tx.executionInfo.missingSigners) {
+    tx.executionInfo.missingSigners.forEach(signer => {
+      allSignersRequired.push(signer.value);
+    });
+  }
+
+  // Calculate confirmed signers by removing missing signers from all required signers
+  const confirmedSigners: Address[] = [];
+  if (tx.executionInfo.confirmationsSubmitted > 0) {
+    // At least the proposer has signed
+    confirmedSigners.push(proposer);
+  }
+
+  return {
+    safeTxHash,
+    nonce: tx.executionInfo.nonce,
+    to:
+      tx.txInfo.recipient?.value ||
+      ("0x0000000000000000000000000000000000000000" as Address),
+    operation: 0, // Default to CALL operation
+    proposer,
+    confirmations: confirmedSigners,
     confirmationsRequired: tx.executionInfo.confirmationsRequired,
     isExecuted: tx.txStatus === "SUCCESS",
   };
@@ -208,9 +257,56 @@ export class ClassicAPI extends BaseApi implements ISafeAPI {
 
   public async fetchDetailed(safeTxHash: Hash): Promise<SafeTx<Address>> {
     // For Rootstock, we can't easily fetch detailed transactions yet
-    // TODO: Implement fetching detailed transactions for Rootstock
     if (ROOTSTOCK_CHAINS.includes(this.prefix)) {
-      // Return a minimal SafeTx object
+      return this.#fetchRootstockDetailed(safeTxHash);
+    }
+
+    // Regular ClassicAPI flow
+    const cached = this.#txs.get(safeTxHash);
+    if (cached) {
+      return normalizeDetailed(cached);
+    }
+    const data = await this.#fetchOne(safeTxHash);
+    this.#txs.set(data.safeTxHash, data);
+    return normalizeDetailed(data);
+  }
+
+  // Fetch and process detailed transaction data for Rootstock
+  async #fetchRootstockDetailed(safeTxHash: Hash): Promise<SafeTx<Address>> {
+    try {
+      // Try to find the transaction in the list
+      const transactions = await this.#fetchRootstockTransactions();
+      const matchingTx = transactions.find(tx => tx.safeTxHash === safeTxHash);
+
+      if (matchingTx) {
+        // We found it in the list, but we need to get the full details
+        const chainId = CHAIN_IDS[this.prefix];
+        const url = `${this.apiURL}/v1/chains/${chainId}/safes/${this.address}/multisig-transactions`;
+
+        const data = (await this.fetch(url)) as RootstockTransactionResponse;
+        const txData = data.results.find(
+          item => getSafeTxHashFromId(item.transaction.id) === safeTxHash,
+        )?.transaction;
+
+        if (txData) {
+          return createRootstockDetailedTx(txData);
+        }
+      }
+
+      // Return minimal data if we couldn't find detailed info
+      return {
+        safeTxHash,
+        nonce: 0,
+        to: "0x0000000000000000000000000000000000000000" as Address,
+        operation: 0,
+        proposer: "0x0000000000000000000000000000000000000000" as Address,
+        confirmations: [],
+        confirmationsRequired: 0,
+        isExecuted: false,
+      };
+    } catch (e) {
+      this.logger.error(e);
+      // Return minimal data on error
       return {
         safeTxHash,
         nonce: 0,
@@ -222,15 +318,6 @@ export class ClassicAPI extends BaseApi implements ISafeAPI {
         isExecuted: false,
       };
     }
-
-    // Regular ClassicAPI flow
-    const cached = this.#txs.get(safeTxHash);
-    if (cached) {
-      return normalizeDetailed(cached);
-    }
-    const data = await this.#fetchOne(safeTxHash);
-    this.#txs.set(data.safeTxHash, data);
-    return normalizeDetailed(data);
   }
 
   async #fetchMany(url?: string | null): Promise<SafeMultisigTransactionData> {
