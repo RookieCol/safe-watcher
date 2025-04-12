@@ -173,17 +173,25 @@ class SafeWatcher {
       "Detailed transaction data",
     );
 
+    // Special handling for Rootstock chains to show full addresses
+    const isRootstockChain = ["trsk", "rsk_testnet"].includes(this.#prefix);
+
     // Map addresses to human-readable names if available
     return {
       ...tx,
       proposer: {
         address: tx.proposer,
         name:
-          this.#signers[tx.proposer] || `Signer ${tx.proposer.slice(0, 6)}...`,
+          this.#signers[tx.proposer] ||
+          (isRootstockChain
+            ? tx.proposer
+            : `Signer ${tx.proposer.slice(0, 6)}...`),
       },
       confirmations: tx.confirmations.map(c => ({
         address: c,
-        name: this.#signers[c] || `Signer ${c.slice(0, 6)}...`,
+        name:
+          this.#signers[c] ||
+          (isRootstockChain ? c : `Signer ${c.slice(0, 6)}...`),
       })),
     };
   }

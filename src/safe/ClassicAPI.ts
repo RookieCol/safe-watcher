@@ -134,36 +134,48 @@ function convertRootstockTransaction(tx: RootstockTransaction): ListedSafeTx {
 function createRootstockDetailedTx(tx: RootstockTransaction): SafeTx<Address> {
   const safeTxHash = getSafeTxHashFromId(tx.id);
 
-  // Get all possible signers
-  const allSigners: Address[] = [];
+  // First, let's identify who the proposer is
+  // In Rootstock, for the first confirmation (submitted=1), the sender is likely the proposer
+  let proposer: Address =
+    "0x0000000000000000000000000000000000000000" as Address;
 
-  // Add the missing signers to our list of all possible signers
-  if (tx.executionInfo.missingSigners) {
-    tx.executionInfo.missingSigners.forEach(signer => {
-      allSigners.push(signer.value);
-    });
+  // If we have a sender address, use it as the proposer
+  if (
+    tx.txInfo.sender?.value &&
+    tx.txInfo.sender.value !== "0x0000000000000000000000000000000000000000"
+  ) {
+    proposer = tx.txInfo.sender.value;
   }
 
-  // Calculate who has already confirmed
+  // Now, let's identify all signers that have confirmed
   const confirmedSigners: Address[] = [];
 
-  // In Rootstock API, if there is 1 confirmation and 1 missing signer,
-  // the sender is the one who confirmed
-  if (tx.executionInfo.confirmationsSubmitted > 0) {
-    // Only add proposer if it's a real address
-    if (
-      tx.txInfo.sender?.value &&
-      tx.txInfo.sender.value !== "0x0000000000000000000000000000000000000000"
-    ) {
-      confirmedSigners.push(tx.txInfo.sender.value);
-    }
+  // Add the proposer as the first confirmed signer if there's at least 1 confirmation
+  if (
+    tx.executionInfo.confirmationsSubmitted > 0 &&
+    proposer !== "0x0000000000000000000000000000000000000000"
+  ) {
+    confirmedSigners.push(proposer);
   }
 
-  // Determine the proposer - in this case it's the sender
-  // Don't use the Safe address as proposer
-  const proposer =
-    tx.txInfo.sender?.value ||
-    ("0x0000000000000000000000000000000000000000" as Address);
+  // The missingSigners contains addresses that have NOT confirmed yet
+  // Get the list of all possible signers
+  const allPotentialSigners: Address[] = [];
+
+  // Missing signers
+  if (
+    tx.executionInfo.missingSigners &&
+    tx.executionInfo.missingSigners.length > 0
+  ) {
+    tx.executionInfo.missingSigners.forEach(signer => {
+      if (
+        signer.value &&
+        signer.value !== "0x0000000000000000000000000000000000000000"
+      ) {
+        allPotentialSigners.push(signer.value);
+      }
+    });
+  }
 
   return {
     safeTxHash,
@@ -285,30 +297,65 @@ export class ClassicAPI extends BaseApi implements ISafeAPI {
       // First try to fetch the specific transaction directly
       const chainId = CHAIN_IDS[this.prefix];
       const txUrl = `${this.apiURL}/v1/chains/${chainId}/transactions/${safeTxHash}`;
+      this.logger.debug(
+        { url: txUrl },
+        "Fetching Rootstock transaction by hash",
+      );
 
       try {
         // Try to get the transaction directly by its hash
         const txData = await this.fetch(txUrl);
         if (txData && txData.txId) {
-          this.logger.debug({ txData }, "Found transaction by hash");
+          this.logger.debug(
+            {
+              txId: txData.txId,
+              sender: txData.txInfo?.sender?.value,
+              required: txData.executionInfo?.confirmationsRequired,
+              submitted: txData.executionInfo?.confirmationsSubmitted,
+              missing: txData.executionInfo?.missingSigners?.map(
+                (ms: { value: Address }) => ms.value,
+              ),
+            },
+            "Found Rootstock transaction by hash",
+          );
           return createRootstockDetailedTx(txData);
         }
-      } catch (e) {
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         this.logger.debug(
+          { error: errorMessage },
           "Could not fetch transaction directly by hash, trying list",
         );
       }
 
       // If direct fetch fails, try to find it in the list
       const url = `${this.apiURL}/v1/chains/${chainId}/safes/${this.address}/multisig-transactions`;
+      this.logger.debug({ url }, "Fetching Rootstock transactions list");
+
       const data = (await this.fetch(url)) as RootstockTransactionResponse;
+      this.logger.debug(
+        {
+          resultCount: data.results?.length || 0,
+        },
+        "Fetched Rootstock transactions list",
+      );
 
       const txData = data.results.find(
         item => getSafeTxHashFromId(item.transaction.id) === safeTxHash,
       )?.transaction;
 
       if (txData) {
-        this.logger.debug({ txData }, "Found transaction in list");
+        this.logger.debug(
+          {
+            id: txData.id,
+            sender: txData.txInfo?.sender?.value,
+            required: txData.executionInfo?.confirmationsRequired,
+            submitted: txData.executionInfo?.confirmationsSubmitted,
+            missing: txData.executionInfo?.missingSigners?.map(ms => ms.value),
+          },
+          "Found Rootstock transaction in list",
+        );
 
         // Check if we have detailed info about signers
         if (txData.executionInfo.missingSigners) {

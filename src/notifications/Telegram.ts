@@ -100,5 +100,15 @@ export class Telegram implements INotifier {
 }
 
 function printSigner({ address, name }: Signer): Markdown {
-  return name ? md.bold(name) : md.inlineCode(address);
+  // If there's a name, use that
+  if (name) {
+    // Check if this is a full address format (for Rootstock)
+    if (name.startsWith("0x") && name.length === 42) {
+      return md.inlineCode(name);
+    }
+    return md.bold(name);
+  }
+
+  // Otherwise just show the address
+  return md.inlineCode(address);
 }
