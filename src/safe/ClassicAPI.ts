@@ -39,6 +39,33 @@ interface SafeMultisigTransaction {
   // signatures: string;
 }
 
+// Rootstock API specific interfaces
+interface RootstockTransactionResponse {
+  next: string | null;
+  previous: string | null;
+  results: {
+    type: string;
+    transaction: RootstockTransaction;
+    conflictType: string;
+  }[];
+}
+
+interface RootstockTransaction {
+  id: string; // Format: multisig_ADDRESS_SAFETXHASH
+  txStatus: string; // "AWAITING_CONFIRMATIONS" | "SUCCESS" | etc.
+  executionInfo: {
+    nonce: number;
+    confirmationsRequired: number;
+    confirmationsSubmitted: number;
+    missingSigners: { value: Address }[] | null;
+  };
+  txInfo: {
+    to: { value: Address };
+    type: string;
+    transferInfo?: any;
+  };
+}
+
 interface SafeMultisigConfirmationResponse {
   owner: Address;
   submissionDate: string;
@@ -77,6 +104,24 @@ function normalizeListed(tx: SafeMultisigTransaction): ListedSafeTx {
   };
 }
 
+// Extract safeTxHash from Rootstock transaction ID
+function getSafeTxHashFromId(id: string): Hash {
+  const parts = id.split("_");
+  return parts[2] as Hash;
+}
+
+// Convert Rootstock transaction to our common format
+function convertRootstockTransaction(tx: RootstockTransaction): ListedSafeTx {
+  const safeTxHash = getSafeTxHashFromId(tx.id);
+  return {
+    safeTxHash,
+    nonce: tx.executionInfo.nonce,
+    confirmations: tx.executionInfo.confirmationsSubmitted,
+    confirmationsRequired: tx.executionInfo.confirmationsRequired,
+    isExecuted: tx.txStatus === "SUCCESS",
+  };
+}
+
 function normalizeDetailed(tx: SafeMultisigTransaction): SafeTx<Address> {
   return {
     safeTxHash: tx.safeTxHash,
@@ -90,6 +135,9 @@ function normalizeDetailed(tx: SafeMultisigTransaction): SafeTx<Address> {
   };
 }
 
+// Special chains that use a different API format
+const ROOTSTOCK_CHAINS = ["trsk", "rsk_testnet"];
+
 const APIS: Record<string, string> = {
   arb1: "https://safe-transaction-arbitrum.safe.global",
   eth: "https://safe-transaction-mainnet.safe.global",
@@ -98,10 +146,22 @@ const APIS: Record<string, string> = {
   trsk: "https://gateway.safe.rootstock.io",
 };
 
+// Chain IDs for special chains
+const CHAIN_IDS: Record<string, number> = {
+  trsk: 31,
+  rsk_testnet: 31,
+};
+
 export class ClassicAPI extends BaseApi implements ISafeAPI {
   readonly #txs = new Map<Hash, SafeMultisigTransaction>();
 
   public async fetchAll(): Promise<ListedSafeTx[]> {
+    // Special case for Rootstock
+    if (ROOTSTOCK_CHAINS.includes(this.prefix)) {
+      return this.#fetchRootstockTransactions();
+    }
+
+    // Regular ClassicAPI flow
     let url: string | null | undefined;
     const results: SafeMultisigTransaction[] = [];
     do {
@@ -116,6 +176,12 @@ export class ClassicAPI extends BaseApi implements ISafeAPI {
   }
 
   public async fetchLatest(): Promise<ListedSafeTx[]> {
+    // Special case for Rootstock
+    if (ROOTSTOCK_CHAINS.includes(this.prefix)) {
+      return this.#fetchRootstockTransactions();
+    }
+
+    // Regular ClassicAPI flow
     const data = await this.#fetchMany();
     const txs = data.results ?? [];
     for (const tx of txs) {
@@ -124,7 +190,40 @@ export class ClassicAPI extends BaseApi implements ISafeAPI {
     return txs.map(normalizeListed);
   }
 
+  // Special method to fetch and parse Rootstock transactions
+  async #fetchRootstockTransactions(): Promise<ListedSafeTx[]> {
+    const chainId = CHAIN_IDS[this.prefix];
+    const url = `${this.apiURL}/v1/chains/${chainId}/safes/${this.address}/multisig-transactions`;
+
+    try {
+      const data = (await this.fetch(url)) as RootstockTransactionResponse;
+      return data.results.map(item =>
+        convertRootstockTransaction(item.transaction),
+      );
+    } catch (e) {
+      this.logger.error(e);
+      return [];
+    }
+  }
+
   public async fetchDetailed(safeTxHash: Hash): Promise<SafeTx<Address>> {
+    // For Rootstock, we can't easily fetch detailed transactions yet
+    // TODO: Implement fetching detailed transactions for Rootstock
+    if (ROOTSTOCK_CHAINS.includes(this.prefix)) {
+      // Return a minimal SafeTx object
+      return {
+        safeTxHash,
+        nonce: 0,
+        to: "0x0000000000000000000000000000000000000000" as Address,
+        operation: 0,
+        proposer: "0x0000000000000000000000000000000000000000" as Address,
+        confirmations: [],
+        confirmationsRequired: 0,
+        isExecuted: false,
+      };
+    }
+
+    // Regular ClassicAPI flow
     const cached = this.#txs.get(safeTxHash);
     if (cached) {
       return normalizeDetailed(cached);
@@ -135,15 +234,29 @@ export class ClassicAPI extends BaseApi implements ISafeAPI {
   }
 
   async #fetchMany(url?: string | null): Promise<SafeMultisigTransactionData> {
-    const u =
-      url ??
-      `${this.apiURL}/api/v1/safes/${this.address}/multisig-transactions/`;
+    let u = url;
+    if (!u) {
+      // Special case for Rootstock chains
+      if (ROOTSTOCK_CHAINS.includes(this.prefix)) {
+        const chainId = CHAIN_IDS[this.prefix];
+        u = `${this.apiURL}/v1/chains/${chainId}/safes/${this.address}/multisig-transactions`;
+      } else {
+        u = `${this.apiURL}/api/v1/safes/${this.address}/multisig-transactions/`;
+      }
+    }
     const data = await this.fetch(u);
     return data;
   }
 
   async #fetchOne(safeTxHash: Hash): Promise<SafeMultisigTransaction> {
-    const url = `${this.apiURL}/api/v1/safes/${this.address}/multisig-transactions/${safeTxHash}`;
+    let url;
+    // Special case for Rootstock chains
+    if (ROOTSTOCK_CHAINS.includes(this.prefix)) {
+      const chainId = CHAIN_IDS[this.prefix];
+      url = `${this.apiURL}/v1/chains/${chainId}/transactions/${safeTxHash}`;
+    } else {
+      url = `${this.apiURL}/api/v1/safes/${this.address}/multisig-transactions/${safeTxHash}`;
+    }
     const data = await this.fetch(url);
     return data;
   }
