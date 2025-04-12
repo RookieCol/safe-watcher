@@ -95,6 +95,7 @@ const APIS: Record<string, string> = {
   eth: "https://safe-transaction-mainnet.safe.global",
   gor: "https://safe-transaction-goerli.safe.global",
   oeth: "https://safe-transaction-optimism.safe.global",
+  trsk: "https://gateway.safe.rootstock.io",
 };
 
 export class ClassicAPI extends BaseApi implements ISafeAPI {

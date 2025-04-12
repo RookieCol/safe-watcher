@@ -124,6 +124,7 @@ const CHAIN_IDS: Record<string, number> = {
   eth: 1,
   gor: 5,
   oeth: 10,
+  trsk: 31,
 };
 
 function normalizeLisited(tx: ListedTx): ListedSafeTx {
