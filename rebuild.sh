@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+# Enable Corepack to use the correct Yarn version
+echo "Enabling Corepack..."
+corepack enable
+corepack prepare yarn@4.6.0 --activate
+
 # Build the TypeScript code
 echo "Building application..."
 yarn build
