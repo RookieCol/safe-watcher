@@ -17,6 +17,7 @@ const NETWORKS: Record<string, string> = {
   eth: "Eth Mainnet",
   gor: "Eth Goerli",
   oeth: "Optimism",
+  trsk: "Rootstock Testnet",
 };
 
 export interface TelegramOptions {

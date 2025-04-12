@@ -162,12 +162,28 @@ class SafeWatcher {
 
   async #fetchDetailed(safeTxHash: Hash): Promise<SafeTx<Signer>> {
     const tx = await this.#api.fetchDetailed(safeTxHash);
+
+    // Log the data for debugging
+    this.#logger.debug(
+      {
+        safeTxHash,
+        proposer: tx.proposer,
+        signers: tx.confirmations,
+      },
+      "Detailed transaction data",
+    );
+
+    // Map addresses to human-readable names if available
     return {
       ...tx,
-      proposer: { address: tx.proposer, name: this.#signers[tx.proposer] },
+      proposer: {
+        address: tx.proposer,
+        name:
+          this.#signers[tx.proposer] || `Signer ${tx.proposer.slice(0, 6)}...`,
+      },
       confirmations: tx.confirmations.map(c => ({
         address: c,
-        name: this.#signers[c],
+        name: this.#signers[c] || `Signer ${c.slice(0, 6)}...`,
       })),
     };
   }

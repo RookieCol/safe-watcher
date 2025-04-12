@@ -133,29 +133,22 @@ function convertRootstockTransaction(tx: RootstockTransaction): ListedSafeTx {
 // Special handling for Rootstock detailed transaction
 function createRootstockDetailedTx(tx: RootstockTransaction): SafeTx<Address> {
   const safeTxHash = getSafeTxHashFromId(tx.id);
+
+  // For the proposer, use the sender from txInfo
   const proposer =
     tx.txInfo.sender?.value ||
     ("0x0000000000000000000000000000000000000000" as Address);
 
-  // Determine signers - proposer is a signer, and others would be derived from missing signers
-  const allSignersRequired: Address[] = [];
-
-  // Add proposer as a signer
-  allSignersRequired.push(proposer);
-
-  // Add missing signers if available
-  if (tx.executionInfo.missingSigners) {
-    tx.executionInfo.missingSigners.forEach(signer => {
-      allSignersRequired.push(signer.value);
-    });
-  }
-
-  // Calculate confirmed signers by removing missing signers from all required signers
+  // For confirmations, we need to handle it differently
   const confirmedSigners: Address[] = [];
+
+  // The first signer is always the proposer (transaction sender)
   if (tx.executionInfo.confirmationsSubmitted > 0) {
-    // At least the proposer has signed
     confirmedSigners.push(proposer);
   }
+
+  // If there are additional confirmations beyond the first signer
+  // In the future, if the API provides info about who confirmed, we can add them here
 
   return {
     safeTxHash,
@@ -274,26 +267,56 @@ export class ClassicAPI extends BaseApi implements ISafeAPI {
   // Fetch and process detailed transaction data for Rootstock
   async #fetchRootstockDetailed(safeTxHash: Hash): Promise<SafeTx<Address>> {
     try {
-      // Try to find the transaction in the list
-      const transactions = await this.#fetchRootstockTransactions();
-      const matchingTx = transactions.find(tx => tx.safeTxHash === safeTxHash);
+      // First try to fetch the specific transaction directly
+      const chainId = CHAIN_IDS[this.prefix];
+      const txUrl = `${this.apiURL}/v1/chains/${chainId}/transactions/${safeTxHash}`;
 
-      if (matchingTx) {
-        // We found it in the list, but we need to get the full details
-        const chainId = CHAIN_IDS[this.prefix];
-        const url = `${this.apiURL}/v1/chains/${chainId}/safes/${this.address}/multisig-transactions`;
-
-        const data = (await this.fetch(url)) as RootstockTransactionResponse;
-        const txData = data.results.find(
-          item => getSafeTxHashFromId(item.transaction.id) === safeTxHash,
-        )?.transaction;
-
-        if (txData) {
+      try {
+        // Try to get the transaction directly by its hash
+        const txData = await this.fetch(txUrl);
+        if (txData && txData.txId) {
+          this.logger.debug({ txData }, "Found transaction by hash");
           return createRootstockDetailedTx(txData);
         }
+      } catch (e) {
+        this.logger.debug(
+          "Could not fetch transaction directly by hash, trying list",
+        );
+      }
+
+      // If direct fetch fails, try to find it in the list
+      const url = `${this.apiURL}/v1/chains/${chainId}/safes/${this.address}/multisig-transactions`;
+      const data = (await this.fetch(url)) as RootstockTransactionResponse;
+
+      const txData = data.results.find(
+        item => getSafeTxHashFromId(item.transaction.id) === safeTxHash,
+      )?.transaction;
+
+      if (txData) {
+        this.logger.debug({ txData }, "Found transaction in list");
+
+        // Check if we have detailed info about signers
+        if (txData.executionInfo.missingSigners) {
+          const missingSignerAddresses =
+            txData.executionInfo.missingSigners.map(ms => ms.value);
+          this.logger.debug(
+            {
+              missingSigners: missingSignerAddresses,
+              required: txData.executionInfo.confirmationsRequired,
+              submitted: txData.executionInfo.confirmationsSubmitted,
+            },
+            "Transaction confirmation details",
+          );
+        }
+
+        return createRootstockDetailedTx(txData);
       }
 
       // Return minimal data if we couldn't find detailed info
+      this.logger.warn(
+        { safeTxHash },
+        "Could not find transaction information for Rootstock",
+      );
       return {
         safeTxHash,
         nonce: 0,
