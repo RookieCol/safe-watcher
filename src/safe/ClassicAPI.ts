@@ -134,21 +134,36 @@ function convertRootstockTransaction(tx: RootstockTransaction): ListedSafeTx {
 function createRootstockDetailedTx(tx: RootstockTransaction): SafeTx<Address> {
   const safeTxHash = getSafeTxHashFromId(tx.id);
 
-  // For the proposer, use the sender from txInfo
+  // Get all possible signers
+  const allSigners: Address[] = [];
+
+  // Add the missing signers to our list of all possible signers
+  if (tx.executionInfo.missingSigners) {
+    tx.executionInfo.missingSigners.forEach(signer => {
+      allSigners.push(signer.value);
+    });
+  }
+
+  // Calculate who has already confirmed
+  const confirmedSigners: Address[] = [];
+
+  // In Rootstock API, if there is 1 confirmation and 1 missing signer,
+  // the sender is the one who confirmed
+  if (tx.executionInfo.confirmationsSubmitted > 0) {
+    // Only add proposer if it's a real address
+    if (
+      tx.txInfo.sender?.value &&
+      tx.txInfo.sender.value !== "0x0000000000000000000000000000000000000000"
+    ) {
+      confirmedSigners.push(tx.txInfo.sender.value);
+    }
+  }
+
+  // Determine the proposer - in this case it's the sender
+  // Don't use the Safe address as proposer
   const proposer =
     tx.txInfo.sender?.value ||
     ("0x0000000000000000000000000000000000000000" as Address);
-
-  // For confirmations, we need to handle it differently
-  const confirmedSigners: Address[] = [];
-
-  // The first signer is always the proposer (transaction sender)
-  if (tx.executionInfo.confirmationsSubmitted > 0) {
-    confirmedSigners.push(proposer);
-  }
-
-  // If there are additional confirmations beyond the first signer
-  // In the future, if the API provides info about who confirmed, we can add them here
 
   return {
     safeTxHash,
